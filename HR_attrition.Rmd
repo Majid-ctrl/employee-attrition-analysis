@@ -1,0 +1,1138 @@
+---
+title: "HW2"
+output: html_document
+date: "2025-11-26"
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Part 0: Libraries & Data loading:
+
+### Part 0.1
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(skimr)
+library(mice)
+library(VIM)
+library(GGally)
+library(MASS)
+library(glmnet)
+library(e1071)
+library(rpart)
+library(dplyr)
+library(pROC)
+library(class)
+library(randomForest)
+library(caret)
+library(moments)
+library(rpart)
+library(rpart.plot)
+library(pdp)
+library(ggplot2)
+library(mlbench)
+library(fastshap)
+library(shapviz)
+library(reshape2)
+library(lightgbm)
+library(corrplot)
+library(MASS)     
+library(gridExtra)
+library(grid)
+```
+
+### Part 0.2: Loading the dataset
+
+Short description of the dataset: This dataset contains HR records for employees, including their demographics, job details, and satisfaction levels. It is used to identify patterns and predict which employees are likely to quit the company.
+Variable Descriptions
+Age: Employee's age.
+
+Attrition: Whether they left the company (Yes/No).
+
+BusinessTravel: Frequency of work travel.
+
+DailyRate: Daily pay rate.
+
+Department: Division they work in (e.g., Sales, R&D).
+
+DistanceFromHome: Commute distance.
+
+Education: Education level (1-5 scale).
+
+EducationField: Major/Field of study.
+
+EmployeeCount: Always 1 (ignore this).
+
+EmployeeNumber: Unique ID for the employee.
+
+EnvironmentSatisfaction: Satisfaction with the workspace (1-4).
+
+Gender: Male or Female.
+
+HourlyRate: Hourly pay rate.
+
+JobInvolvement: Level of engagement with the job (1-4).
+
+JobLevel: Rank within the company (1-5).
+
+JobRole: Specific job title.
+
+JobSatisfaction: Satisfaction with the job itself (1-4).
+
+MaritalStatus: Married, Single, or Divorced.
+
+MonthlyIncome: Monthly salary.
+
+MonthlyRate: Another monthly pay attribute.
+
+NumCompaniesWorked: Number of prior employers.
+
+Over18: Confirms employee is an adult (Always Yes).
+
+OverTime: Whether they work overtime (Yes/No).
+
+PercentSalaryHike: Last salary increase percentage.
+
+PerformanceRating: Recent performance score.
+
+RelationshipSatisfaction: Quality of relationships with colleagues (1-4).
+
+StandardHours: Standard working hours (Always 80).
+
+StockOptionLevel: Amount of company stock owned.
+
+TotalWorkingYears: Total career experience.
+
+TrainingTimesLastYear: Number of training sessions attended.
+
+WorkLifeBalance: Rating of time for personal life (1-4).
+
+YearsAtCompany: Tenure at this specific company.
+
+YearsInCurrentRole: Years in their current position.
+
+YearsSinceLastPromotion: Time since last promotion.
+
+YearsWithCurrManager: Time under current boss.
+
+```{r}
+set.seed(123)
+# set working directory
+setwd("~/HomeWork2_100529209_100550967")
+# Load the dataset
+data <- read.csv("WA_Fn-UseC_-HR-Employee-Attrition.csv", stringsAsFactors = TRUE)
+```
+
+# Part 1: Data preprocessing & Visualization
+
+### Part 1.1: Variable removal & transformation:
+
+We will remove some variables that add nothing to the dataset, for example the variables ("Over18","Standardhours", and "EmployeeCount") which are constant values "Y", "80", and "1" respectively.
+meaning that they are redundant to our data and study.
+In addition we will remove the ID variable which is just an identifier for the observations.
+
+```{r}
+# Remove redundant constant columns (EmployeeCount, Over18, StandardHours)
+# These have the same value for every row and add no information.
+data$EmployeeCount <- NULL
+data$Over18 <- NULL
+data$StandardHours <- NULL
+data$EmployeeNumber <- NULL  # ID Variable
+```
+
+### Part 1.2: Missing Values:
+
+before applying any models we must make sure our data does not have any missing values, in the case that it does we must find the optimal way to impute or replace them.
+
+```{r}
+# We check if there is any NA values
+if(any(is.na(data))) {
+  print("The data set contains missing values.")
+} else {
+  print("The dataset contains 0 missing values.")
+}
+```
+
+We can see that our dataset is already clean and it does not contain any missing values, hence we do not need to take any measures in this regard.
+### Part 1.3 Feature engineering: the Income variables are right skewed (a few employees earn significantly more than the majority).
+This skewness can negatively impact linear models we will apply.
+for this reason we will have to Log transform them.
+
+```{r}
+cat("Skewness of MonthlyIncome:", skewness(data$MonthlyIncome), "\n")
+
+# Apply log transform to fix skewness (adding +1 to avoid log(0) issues)
+data$LogMonthlyIncome <- log(data$MonthlyIncome + 1)
+```
+
+Our variable was indeed skewed and we log transofrmed it to solve the issue.
+
+Other feature enginnering we will apply is codifying of the ordinal variables like the travelling frequancy, that is because we want to **retain the ordinal nature** of these variables.
+
+```{r}
+data$BusinessTravelNumeric <- as.numeric(factor(data$BusinessTravel, 
+                                                levels = c("Non-Travel", "Travel_Rarely", "Travel_Frequently"))) - 1
+```
+
+***Important Note*** we keep the original "BusinessTravelNumeric" and "MonthlyIncome" of our data in order for the feature selection algorithm to decide their importance and compare with the newly engineered features.
+
+### Part 1.4 Outliers
+
+We will need to take care of outliers before moving with feature selection and prediction models.
+as the scale of the outliers might skew our predictions and importance of variables.
+
+```{r}
+# We apply outlier removal on ALL numeric variables
+data_numeric <- data.frame(names(select_if(data, is.numeric)))
+# we must visualize our data in a long form to make it easy to see the outliers
+ggplot(stack(data_numeric), aes(x = ind, y = values)) +
+ geom_boxplot(fill = "lightyellow",color = "darkblue", outlier.color = "darkred",
+ outlier.shape = 16) +
+ facet_wrap(~ ind, scales = "free") + #Facet grid for each variable
+ theme_minimal() +
+ labs(title = "Boxplots of numeric Variables", x = "Variable", y = "Value") +
+ theme_minimal() 
+
+
+```
+
+from the boxplots above we can see that many of our variables are skewed and since the 3-Sigma method assumes normality of the data we can not use it, we will proceed with using the IQR method to remove the outliers.
+
+```{r}
+
+is_outlier <- function(x) {
+  qnt <- quantile(x, probs = c(0.25, 0.75), na.rm = TRUE)
+  iqr_val <- IQR(x, na.rm = TRUE)
+  lower_bound <- qnt[1] - 3 * iqr_val
+  upper_bound <- qnt[2] + 3 * iqr_val
+  return(x < lower_bound | x > upper_bound)
+}
+
+#we only need to identify the outliers in the continuous data type variables.
+continuous_candidates <- c("MonthlyIncome", "TotalWorkingYears", "YearsAtCompany","YearsInCurrentRole", "YearsSinceLastPromotion",  "YearsWithCurrManager", "Age", "DistanceFromHome","DailyRate", "MonthlyRate", "HourlyRate")
+
+# Apply filter to the full dataset
+data_clean <- data
+for(var in continuous_candidates) {
+  # Only filter if the variable exists in the dataset
+  if(var %in% names(data_clean)) {
+    data_clean <- data_clean %>% filter(!is_outlier(!!sym(var)))
+  }
+}
+
+cat("Rows before outlier removal:", nrow(data), "\n")
+cat("Rows after outlier removal:", nrow(data_clean), "\n")
+```
+
+the outlier removal process removed exactly 381 rows leaving us with 1089 observations.
+
+### Part 1.5: Visualization
+
+Before we commence with visualization we must now split the data into 2 datasets.
+those are *Training* and *testing*
+
+```{r}
+in_train = createDataPartition(data$Attrition, p = 0.8, list = FALSE) 
+#80% for training and 20% for testing
+training = data[ in_train,]
+testing = data[-in_train,]
+nrow(training) 
+#here we see how many observations are for training and below for testing
+nrow(testing)
+table(training$Target_Variable)/length(training$Target_Variable) 
+
+```
+
+We can now start with the Visualization \##### Plot1: Visualizing Income distribution by Attrition
+
+```{r}
+p1 <- ggplot(data, aes(LogMonthlyIncome, fill=Attrition)) + 
+  geom_density(alpha=0.5) + 
+  ggtitle("Log-Income Density by Attrition") + theme_minimal()
+print(p1)
+```
+
+this graph shows that when employees have higher income there is a higher chance of staying, on the other hand we can also say that lower income results in them leaving the company.
+there is a turning point where beyond that point in the income scale people are more likely to stay.
+In conclusions, Lower compensation is a strong risk factor for attrition, while higher compensation is associated with stability.
+
+##### Plot 2: Visualizing OverTime impact on the attrition
+
+```{r}
+p2 <- ggplot(data, aes(x = OverTime, fill = Attrition)) +
+  geom_bar(position = "fill") +
+  ggtitle("Proportion of Attrition by OverTime") + ylab("Proportion") +
+  scale_fill_manual(values = c("No" = "palegreen2", "Yes" = "orchid"))
+print(p2)
+```
+
+We can observe a marginally higher overtime done by employees who have decided to leave, leading us to assume that overworked employees eventually decided to leave the company.
+
+##### Plot 3: Working Years vs attrition
+
+```{r}
+p3 <- ggplot(data, aes(x = Attrition, y = TotalWorkingYears , fill = Attrition)) + 
+  geom_boxplot(outlier.color = "red4") +
+  ggtitle("Log-TotalWorkingYears Distribution by Attrition") +
+  scale_fill_manual(values = c("No" = "lightpink", "Yes" = "skyblue1")) + theme_minimal()
+print(p3)
+```
+
+from the graph we can see that lack of experience is a big factor of attrition, employees who are inexperienced have more chance of being let go.
+the "yes" group is mostly focused in the range 2 to 10 years while the pink group "No" is more sparced and is of a longer range 6 to 18.
+In conclusion, Lack of total work experience is associated with higher attrition risk.
+
+### Plot 4 : Target Distribution (Pie Chart)
+
+```{r}
+target_counts <- as.data.frame(table(data$Attrition))
+colnames(target_counts) <- c("Target_Variable", "Count")
+target_counts$Percentage <- round(target_counts$Count / sum(target_counts$Count) * 100, 1)
+
+p4 <- ggplot(target_counts, aes(x = "", y = Count, fill = Target_Variable)) +
+  geom_bar(stat = "identity", width = 1, color = "black") + coord_polar(theta = "y") +
+  theme_void() + ggtitle("Proportion of Attrition") +
+  scale_fill_manual(values = c("No" = "lightpink", "Yes" = "skyblue1")) +
+  geom_text(aes(label = paste(Count, "(", Percentage, "%)", sep = "")),
+            position = position_stack(vjust = 0.5), size = 4)
+
+print(p4)
+```
+
+We can see that the ratio of employees who left and those that did not is very big 83% to 16% this means that our model would lean into predicting people who stay better than those who leave, this would suggest that it is better to focus on models prioritizing sensitivity and recall.
+such as AUC and ROC.
+
+### Plot 5: Density plot of age
+
+```{r}
+p5<-ggplot(data, aes(x=Age, fill=Attrition)) + 
+  geom_density(alpha=0.5) + ggtitle("Age Density") + theme_minimal()
+print(p5)
+```
+
+The "yes" group peaks at ages 28 to 32 which indicates that people in the early years of their career have more chance of leaving or being let go of.
+while the "No" group are concentrated at age groups 32 to 36 and has higher density towards the 60s and 50s.
+In conclusion, younger people were are volatile to leaving the company while those who are older had more stability.
+
+### Plot 6: Job Role Barplot in comparison withh the Attrition
+
+```{r}
+p6 <- ggplot(data, aes(x = JobRole, fill = Attrition)) +
+  geom_bar(position = "fill") + coord_flip() + 
+  ggtitle("Attrition by Job Role") + ylab("Proportion") + theme_minimal()
+print(p6)
+```
+
+We can see that the role with highest attrition was the sales representative with nearly 40% leaving the company next to it is the sales executive role and HR. wheras the research director role was the least affected next to Research director Manager and healthcare representative.
+the rest of the role sit on the median of the percentages of the roles attrition percentage.
+
+In conclusion we can say that entry roles where empl0yees probably are undertaking trial period and high stress roles such as lab tech and research are more prone to attrition since it might be a reason for burning out and leaving.
+
+## Correlation of variables:
+
+```{r}
+# Select only numeric variables
+numeric_data <- data %>% select_if(is.numeric)
+
+# Calculate correlation matrix
+M <- cor(numeric_data)
+
+corrplot(M, 
+         method = "color", 
+         type = "upper",       
+         order = "hclust",     
+         tl.col = "black", 
+         tl.srt = 45,          
+         tl.cex = 0.6,        
+         diag = FALSE,         
+         addCoef.col = NULL,   
+         title = "Correlation Matrix (Cleaned)", 
+         mar = c(0,0,1,0))
+```
+
+There is a very strong correlation between JobLevel and MonthlyIncome (almost dark blue/1.0), as well as TotalWorkingYears and JobLevel.
+This is expected (higher level = higher pay).
+
+The high correlation between YearsAtCompany, YearsInCurrentRole, and YearsWithCurrManager, indicating these variables provide redundant and unecessarily repeated information.
+
+PercentSalaryHike and PerformanceRating show a strong positive correlation, to no surprise this means that higher performance ratings result in a pay rise.
+
+there is also high variance between many variables which means that some regression models might struggle while ensemble based models like trees and forest would perform better.
+
+# Part 2: Predictive classifiers
+
+###Part 2.0: preparation: Firstly we will remove some unnecessary variables, such as *MonthlyIncome* as we have already engineered a new variable *LogMonthlyIncome*
+
+```{r}
+training$MonthlyIncome <- NULL
+testing$MonthlyIncome <- NULL
+```
+
+We already know that the target variable *Attrition* is a factor so we do not have to change anything in it.
+
+## Part 2.1: Logestic regression
+
+We apply the glm function with *Family=binomial* since it is a yes or no question
+
+```{r}
+model_lr <- glm(Attrition ~.,family=binomial(link='logit'),data=training)
+
+#we use summary to see a summary of the prediction
+summary(model_lr)
+
+# Prediction
+logit_prob <- predict(model_lr, newdata = testing, type = 'response')
+logit_pred <- factor(ifelse(logit_prob > 0.5, "Yes", "No"), levels = c("No", "Yes"))
+
+# Performance
+cat("Logistic Regression Results:\n")
+print(confusionMatrix(logit_pred, testing$Attrition))
+
+# ROC
+roc_logit <- roc(testing$Attrition, logit_prob)
+cat("AUC (Logistic):", auc(roc_logit), "\n")
+plot.roc(roc_logit, col="hotpink", print.auc=T, main="ROC Curve")
+```
+
+Firstly we can see that the new variable we engineered *BussineseTravelNumeric* was dropped by R as it probably saw the redundancy with the original variable and had dropped it.
+we can also see that working overtime was the most important predictor as it changes the chances that a person leaves by aa big amount.
+in addition frequent travellers have a much higher chance of leaving the company.
+on the other hand jobSatisfaction is a negative indicator of leaving the company, meaning as the jobsatissfaction go up the chance of attrition goes down.
+from the NumCompaniesWorked variable we can see that Employees who have worked at many companies in the past are statistically more likely to leave this one too.
+for the income we can also see that higher income leads to esser chances of attrition as it probably contributes into satisfaction at the role.
+
+from the *confusion matrix* we can see that the accuracy is 86%, on the surface this looks good but in reality it is a very poor model as from what we have seen 84% of the dataset is contained in the "No" categor meaning it was only performing 2% better than the minimum it can do.
+the *kappa* coeffecient is 0.39 that is very "moderate" which indicates that the accuracy is that much due to the large number of observations belonging to the "No" group.
+*Sensitivity* (Retention Detection): 95.1%.
+The model is excellent at identifying people who will stay (due to how many people usually stay).
+*Specificity* (Attrition Detection): 38.3%.
+This is the critical weakness.
+Out of 47 actual leavers in the test set, the model only caught 18.
+It missed 29 people (False Negatives)
+
+the *AUC* is 0.852 which is very strong although the cutoff probability is 0.5 which is to high for our imbalanced dataset.
+
+## Part 2.2: PENALIZED LOGISTIC REGRESSION
+
+this is very simillar to the logestic regression model except we will add a risk value to increase the sensitivity of the model
+
+```{r}
+ctrl <- trainControl(method = "cv", number = 5, classProbs = TRUE, summaryFunction = twoClassSummary)
+glmnet_grid <- expand.grid(alpha = seq(0, 1, 0.1), lambda = seq(0, 0.1, 0.01))
+
+set.seed(123)
+glmnet_fit <- train(Attrition ~ ., 
+                    data = training,
+                    method = "glmnet",
+                    tuneGrid = glmnet_grid,
+                    metric = "ROC",
+                    preProcess = c("center", "scale"), # Required for regularization
+                    trControl = ctrl)
+
+# Prediction
+glmnet_prob <- predict(glmnet_fit, testing, type = "prob")[, "Yes"]
+glmnet_pred <- predict(glmnet_fit, testing)
+
+cat("Penalized Logit Results:\n")
+print(confusionMatrix(glmnet_pred, testing$Attrition))
+cat("Best Parameters:", paste("Alpha =", glmnet_fit$bestTune$alpha, "Lambda =", glmnet_fit$bestTune$lambda), "\n")
+roc_Plogit <- roc(testing$Attrition, glmnet_prob)
+
+plot.roc(roc_Plogit, col="blue", print.auc=T, main="ROC Curve")
+
+```
+
+the best parameters *alpha = 0 & Lambda = 0.01* means that the model has chosen Rigid regression instead of lasso, rigid regression handles well the correlated variables we indicated earlier such as Income/JobLevel and Experience/Age, by shrinking their variances down to close to 0 but not exactly which reduces their variation.
+in addition we can see an increase in accuracy in comparison to the unpenalized logestic regression, in addition the P-Value [Acc \> NIR] is 0.02, which is statistically significant ($< 0.05$).
+This means the model is finally performing significantly better than a random guess (or just predicting "No" for everyone).
+the increase in the *kappa* value means that our model performed better and it is not just a lucky run.
+*Precision* is up to 0.89 which is good because it predicted people who were gonna stay more accurately saving the company mony on attrition of enployees who were actually staying.
+*specificty*is our weak point here as it is only 0.38 which means the model predicts those who are gonna leave less accurately which classifies them in the "No group which might not be a very economically good thing to rely on.
+
+## Part 2.3 : LDA linear discriminal analysis
+
+the main idea here is to introduce some bias to reduce variance and assume all covariance matrices are equal.
+
+```{r}
+lda_model <- lda(Attrition ~ ., data=training)
+# Prediction
+lda_pred_obj <- predict(lda_model, testing)
+lda_class <- lda_pred_obj$class
+lda_prob <- lda_pred_obj$posterior[, "Yes"]
+
+cat("LDA Results:\n")
+print(confusionMatrix(lda_class, testing$Attrition))
+# Plot LDA ROC Curve on its own
+roc_lda <- roc(testing$Attrition, lda_prob)
+plot.roc(roc_lda, col="cyan4", print.auc=TRUE, main="ROC Curve: LDA")
+```
+
+*Specificity* has increased considerably up to 0.4043 this is an increase in predicting people who will leave, which will make our model less costly in the risk learning section ahead.
+meanwhile the *sensitivity* is still high which is good meaning we are good at predicting people who will stay.
+*the accuracy* is 0.86 which is better than the base model but lower than the penalized logistic regression model.
+the *kappa* falls between the baseline (0.39) and the Penalized model (0.46).
+It indicates moderate agreement.
+Area Under the Curve (AUC): 0.851 An AUC of 0.851 is considered excellent (0.8–0.9 range).
+It indicates that the LDA model has an 85.1% probability of ranking a randomly chosen "Leaver" higher than a randomly chosen "Stayer." this is also statistically identical to the logestic regression
+
+## Part 2.4: QDA quadratic discriminal analysis
+
+this model is very similar to LDA with the key difference that it assumes different covariance matrice.
+it might be prone to overfitting for amaller datasets so we can expect a model that is a bit overfit.
+
+since our variables are highly correlated running the QDA will not work due to rank defeciency, so we must make a new dataset for qda removing the redundant variables.
+
+```{r}
+vars_to_remove <- c("JobLevel", "YearsInCurrentRole", "YearsWithCurrManager", 
+                    "TotalWorkingYears", "PercentSalaryHike")
+
+
+vars_to_remove <- intersect(names(training), vars_to_remove)
+
+training_qda <- training[, !(names(training) %in% vars_to_remove)]
+testing_qda  <- testing[, !(names(testing) %in% vars_to_remove)]
+```
+
+```{r}
+  #qda_model <- qda(Attrition ~ ., data = training_qda)
+```
+
+qda fails because our dataset variables are very correlated removing some of them still does not help with the issue, we will try running it with only the top variabes.
+which means our dataset is not good enough for qda.
+*We consider QDA as failed for now and we will try again after pplying feature selection*
+
+## Part 2.5: Naive Bayes
+
+Naive Bayes Assumes the feature distributions are spheres (no correlation, equal variance in all directions) and that each class can have its own spherical distribution.
+
+```{r}
+nb_model <- naiveBayes(Attrition ~ ., data = training)
+
+# Prediction
+nb_pred_class <- predict(nb_model, testing)
+# "raw" gives probabilities
+nb_prob <- predict(nb_model, testing, type="raw")[, "Yes"]
+
+cat("Naive Bayes Performance:\n")
+print(confusionMatrix(nb_pred_class, testing$Attrition))
+
+#roc an auc
+roc_nb <- roc(testing$Attrition, nb_prob)
+
+# Plot it (add=FALSE creates a new plot)
+plot.roc(roc_nb, 
+         col = "orange", 
+         print.auc = TRUE, 
+         main = "ROC Curve: Naive Bayes",
+         legacy.axes = TRUE)
+```
+
+the results for the naive bayes model are much different than those of the LDA and the logistic regression, specifically the *Specificity* here is much higher as it sits on 0.7234 which is considerably higher than LDA.
+meaning we were able to solve the issue of misidentifying the minority class "Yes".
+althugh we do have a trade off here that being that the *accuracy* dropped down to 0.7918 and the *sensetivity* to 0.8049
+
+in addition the AUC is notably lower than the AUCs we saw for Logistic Regression and LDA (which were around 0.85).
+which confirms that assuming that all variables are independent might not be the smartest assumption to make.
+and as the complexity of the variables increases thee model finds it tougher to predict the minority class.
+even thought it is very good at predicting the obvious ones.
+
+in conclusion, in risk learning Naive Bayes might be the most profitable model, in the cases that if losing an employee is much higher than retaining them this will help in minimizing the losses.
+
+## Part 2.7: conclusions for Part 2:
+
+from all of our models we can conclude the following:
+
+Logistic / LDA / Penalized: \~0.85 AUC (The best models so far).
+
+Naive Bayes: \~0.80 AUC (Good, but not the best in the statistical standpoint).
+
+QDA: Failed (due to data structure).
+
+# Part 3: Interpertable Classification, (Machine learning):
+
+In this part, we use interpretable machine learning methods to complement the probabilistic classification models developed previously.
+Decision trees allow us to understand the decision rules and interactions between predictors, which is especially important in the employee attrition problem.
+
+## Part 3.1: Decision Tree estimation:
+
+We estimate a classification decision tree using the CART algorithm.
+To reduce overfitting and preserve interpretability, we control the complexity of the tree.
+
+```{r}
+# 1. Fit a classification decision tree
+set.seed(123)
+tree_model <- rpart(
+  Attrition ~ .,
+  data = training,
+  method = "class",
+  control = rpart.control(
+    minsplit = 20,
+    cp = 0.001  # Low CP allows the tree to grow large before pruning
+  )
+)
+
+# 2. Display complexity parameter table
+printcp(tree_model)
+```
+
+## Part 3.1.1 Hyper parameter selection
+To ensure we are using the optimal settings, we perform a Grid Search using Cross-Validation. This tests multiple values for the Complexity Parameter (cp) to find the one that maximizes accuracy.
+```{r}
+# Define the control using 5-fold Cross-Validation
+fitControl <- trainControl(method = "cv", number = 5)
+
+# Define the grid of hyperparameters (CP values to test)
+grid <- expand.grid(cp = seq(0.001, 0.05, by = 0.002))
+
+# Train the model to find the best parameter
+set.seed(123)
+tune_tree <- train(
+  Attrition ~ ., 
+  data = training, 
+  method = "rpart", 
+  trControl = fitControl, 
+  tuneGrid = grid
+)
+
+# Output the best hyperparameter
+cat("Optimal CP found via Grid Search:", tune_tree$bestTune$cp, "\n")
+print(tune_tree)
+```
+
+## Part 3.2: Analysis of tree complexity :
+
+To further study the effect of model complexity, we analyze the cost–complexity table provided by the decision tree algorithm.
+
+```{r}
+# 1. Identify optimal complexity parameter (minimizing xerror)
+opt_cp <- tree_model$cptable[which.min(tree_model$cptable[, "xerror"]), "CP"]
+
+# 2. Obtain a simplified tree by pruning
+tree_simple <- prune(tree_model, cp = opt_cp)
+
+# Display the pruned tree details
+printcp(tree_simple)
+```
+
+## Part 3.3:Visualization of decision tree:
+
+We visualize the simplified tree to interpret the classification rules learned from the data.
+
+```{r}
+# Plot the simplified decision tree
+rpart.plot(
+  tree_simple,
+  type = 2,
+  extra = 106,
+  under = TRUE,
+  fallen.leaves = TRUE,
+  main = "Decision Tree for Employee Attrition"
+)
+
+```
+
+## Part 3.4:Variable importance:
+
+We examine the relative importance of the predictors according to the decision tree.
+
+```{r}
+# Extract variable importance
+tree_simple$variable.importance
+
+```
+
+The results indicate that TotalWorkingYears and OverTime are the most important predictors of employee attrition, highlighting the role of career stage and workload intensity.
+Variables such as LogMonthlyIncome, MaritalStatus, and JobRole also contribute significantly, suggesting that economic incentives and organizational characteristics are relevant drivers of attrition.
+Other predictors play a secondary role by refining classification decisions within specific subgroups ##Part 3.5:Interpretation of decision rules The decision tree identifies OverTime and TotalWorkingYears as key variables separating employees who leave the company from those who stay.
+Employees with fewer total working years or who frequently work overtime exhibit a higher probability of attrition.
+
+Among employees who do not work overtime, variables such as JobSatisfaction, LogMonthlyIncome, and Age further refine the classification, indicating that higher satisfaction, higher income, and greater experience are associated with employee retention.
+For employees who work overtime, BusinessTravel frequency and YearsAtCompany play an important role, revealing interaction effects between workload, mobility, and tenure that are not captured by linear probabilistic models.
+
+
+
+## Part 3.5: Predictive performance and bias–variance trade-off:
+
+Although interpretability is the main objective, we briefly assess predictive performance to provide context and connect with the bias–variance trade-off
+
+```{r}
+# 1. Class probabilities from the original tree
+tree_prob <- predict(tree_model, testing, type = "prob")[, "Yes"]
+
+# 2. Class probabilities from the simplified tree
+tree_simple_prob <- predict(tree_simple, testing, type = "prob")[, "Yes"]
+
+```
+
+## Part 3.6: ROC curve and AUC for the decision tree
+
+We evaluate the classification ability of the decision tree using the ROC curve and the Area Under the Curve (AUC):
+
+This allows us to compare the interpretable machine learning model with the probabilistic classifiers developed in Part 2.
+
+```{r}
+# 1. Compute ROC curve for the simplified decision tree
+roc_tree_simple <- roc(testing$Attrition, tree_simple_prob)
+
+# 2. Plot ROC curve
+plot.roc(
+roc_tree_simple,
+col = "darkgreen",
+print.auc = TRUE,
+main = "ROC Curve: Decision Tree (Interpretable ML)"
+)
+
+```
+
+The ROC curve summarizes the trade-off between sensitivity and specificity across different classification thresholds, while the Area Under the Curve (AUC) provides a threshold-independent measure of classification performance.
+
+The decision tree achieves an AUC of 0.724, indicating a moderate but meaningful ability to discriminate between employees who leave the company and those who stay.
+This value is notably lower than the AUC obtained by probabilistic models such as logistic regression and LDA in Part 2, which achieved AUC values close to 0.85.
+
+## Part 3.7:Risk learning perspective
+
+From a risk learning perspective, misclassification costs in employee attrition problems are not symmetric:
+
+Failing to identify employees who are likely to leave may be more costly than incorrectly flagging employees who would stay.
+
+The transparent decision rules provided by the decision tree allow decision-makers to clearly identify employee profiles associated with higher attrition risk and to design targeted intervention strategies.
+In this context, interpretability and explainability may outweigh small gains in predictive accuracy.
+
+##Part 3.8:Random Forest Classification
+
+Random Forest is an ensemble learning method that builds multiple decision trees using bootstrapped samples of the data and aggregates their predictions. By averaging across many trees, Random Forest reduces variance and improves predictive accuracy relative to a single decision tree. However, this gain in performance comes at the cost of interpretability, as the ensemble structure prevents the extraction of simple decision rules.
+
+##Part 3.8.1:Random forest model estimation
+```{r}
+rf_model <- randomForest(
+Attrition ~ .,
+data = training,
+ntree = 300,
+mtry = floor(sqrt(ncol(training) - 1)),
+importance = TRUE
+)
+
+```
+
+##Part 3.8.2:Prediction and performance evaluation
+```{r}
+# Class predictions
+rf_pred <- predict(rf_model, testing)
+
+# Predicted probabilities
+rf_prob <- predict(rf_model, testing, type = "prob")[, "Yes"]
+
+# Confusion matrix
+confusionMatrix(rf_pred, testing$Attrition)
+
+```
+##Part 3.8.3:ROC curve and AUC
+```{r}
+roc_rf <- roc(testing$Attrition, rf_prob)
+
+plot.roc(
+roc_rf,
+col = "darkorange",
+print.auc = TRUE,
+main = "ROC Curve: Random Forest"
+)
+
+auc(roc_rf)
+
+```
+##Part 3.8.4:Variable importance
+```{r}
+importance(rf_model)
+```
+Random Forest achieves higher predictive performance than a single decision tree by reducing variance through ensemble averaging. The variable importance analysis confirms that TotalWorkingYears and OverTime, remain among the most influential predictors, consistent with previous models. Despite its strong predictive ability, Random Forest lacks transparency, as individual decision paths cannot be easily interpreted, limiting its usefulness in explainability-driven applications.
+
+##Part 3.10:KNN
+KNN is a non-parametric, instance-based learning algorithm that classifies observations based on the labels of their nearest neighbors in the feature space. Unlike tree-based methods, KNN does not build an explicit model and is highly sensitive to feature scaling.
+
+##Part 3.10.1:Data preprocessing and scaling
+```{r}
+train_x <- training %>% select_if(is.numeric)
+test_x  <- testing %>% select_if(is.numeric)
+train_y <- training$Attrition
+test_y  <- testing$Attrition
+
+# 2. Standardize predictors (Z-score normalization)
+# We define the pre-processing on training data, then apply to both
+preproc <- preProcess(train_x, method = c("center", "scale"))
+train_x_scaled <- predict(preproc, train_x)
+test_x_scaled  <- predict(preproc, test_x)
+
+# 3. Combine for 'caret' training 
+# caret requires X and Y combined in the 'data' argument for formula method
+train_knn_data <- train_x_scaled
+train_knn_data$Attrition <- train_y
+```
+
+
+##Part 3.10.2:Chosing optimal K
+```{r}
+# Define Control for Cross-Validation (5-fold)
+# IMPORTANT: Added 'classProbs = TRUE' so we can calculate ROC/AUC later
+ctrl_knn <- trainControl(method = "cv", 
+                         number = 5, 
+                         classProbs = TRUE)
+
+# Define Grid of k values to test (odd numbers to avoid ties)
+knn_grid <- expand.grid(k = seq(5, 25, by = 2))
+
+set.seed(123)
+knn_fit <- train(
+  Attrition ~ ., 
+  data = train_knn_data, 
+  method = "knn", 
+  trControl = ctrl_knn, 
+  tuneGrid = knn_grid,
+  preProcess = NULL # Data is already scaled in 3.10.1
+)
+
+# Output the best k
+cat("Optimal k chosen:", knn_fit$bestTune$k, "\n")
+print(knn_fit)
+plot(knn_fit)
+```
+
+##Part 3.10.3:Running the model with the optimal k
+```{r}
+# Predict Class (Yes/No) using the optimal k automatically
+knn_pred <- predict(knn_fit, newdata = test_x_scaled)
+
+# Predict Probabilities (needed for ROC curve)
+# We focus on the probability of "Yes" (Attrition)
+knn_prob <- predict(knn_fit, newdata = test_x_scaled, type = "prob")[, "Yes"]
+
+# Confusion Matrix
+confusionMatrix(knn_pred, test_y)
+
+```
+### Part 3.10.4 plotting the ROC and AUC
+```{r}
+# Generate ROC Object
+roc_knn <- roc(test_y, knn_prob, levels = c("No", "Yes"), direction = "<")
+
+# Plot ROC Curve
+plot(roc_knn, 
+     col = "purple", 
+     print.auc = TRUE, 
+     main = "ROC Curve: KNN",
+     legacy.axes = TRUE) # Makes the x-axis 1-Specificity (standard format)
+
+# Print AUC value
+auc(roc_knn)
+```
+
+KNN is capable of capturing complex non-linear decision boundaries by relying on local neighborhood information. While it can achieve competitive predictive performance, the method lacks a global model structure and provides no interpretable decision rules. As a result, KNN is difficult to justify in settings where transparency and explainability are essential.
+
+##Part 3.11: Comparison and bias–variance perspective
+
+The results from Decision Trees, Random Forest, and KNN illustrate the bias–variance trade-off discussed in the course. The single decision tree exhibits higher bias but offers clear and interpretable decision rules. Random Forest reduces variance and improves predictive performance by aggregating multiple trees, while KNN further reduces bias by relying on local information.
+
+However, both Random Forest and KNN sacrifice interpretability, making them less suitable for applications where understanding the drivers of attrition is critical. In contrast, the decision tree provides actionable insights despite lower predictive performance
+
+## Part 3.12: Conclusions for Part 3
+
+In this part, we analyzed employee attrition using interpretable and non-interpretable machine learning models. Decision trees provided complex decision rules with a lot of nodes, highlighting the role of career stage, workload, and economic factors. Random Forest and KNN improved predictive performance by reducing bias and capturing non-linear relationships, but at the cost of interpretability.
+
+These results illustrate the bias–variance trade-off discussed in the course: more complex models achieve higher accuracy but sacrifice transparency. In risk-sensitive applications such as employee retention, the choice between interpretable and non-interpretable models depends on whether explanation or predictive performance is prioritized.
+
+# Part 4: Feature selection:
+
+We use feature selection to reduce the diminsionality and complexity of the datasets by only keeping the important variables which reduces redundances and increases effeciency.
+
+## Part 4.1: Recursive Feature Elimination & selection:
+
+We use *Recursive Feature Elimination* to choose our most important variables and create new datasets such that we can compare the results of the models before and after.
+
+```{r}
+# 1. Explicitly Define X (Predictors) and Y (Target)
+y_rfe <- training$Attrition
+x_rfe <- training %>% dplyr::select(-Attrition) %>% as.data.frame()
+
+
+
+# 3. Define Control for RFE
+# rfFuncs = Random Forest selection, cv = Cross Validation (5 folds)
+ctrl_rfe <- rfeControl(functions = rfFuncs, method = "cv", number = 5)
+
+
+rfe_result <- rfe(x_rfe, y_rfe, 
+                  sizes = c(5:20), 
+                  rfeControl = ctrl_rfe)
+
+# 4. Results
+print(rfe_result)
+top_vars <- predictors(rfe_result)
+
+cat("\nTop Variables Selected:\n")
+print(top_vars)
+
+# 5. Create 'Selected' Datasets for Phase 2
+# We subset the original data to keep ONLY Attrition and the Top Variables
+training_selected <- training[, c("Attrition", top_vars)]
+testing_selected  <- testing[, c("Attrition", top_vars)]
+```
+
+## Part 4.2: Predictive classification with selected variables (and comparison)
+
+```{r}
+# A. LOGISTIC REGRESSION
+logit_opt <- glm(Attrition ~ ., family = "binomial", data = training_selected)
+logit_prob_opt <- predict(logit_opt, testing_selected, type = "response")
+
+# B. LDA
+lda_opt <- lda(Attrition ~ ., data = training_selected)
+lda_prob_opt <- predict(lda_opt, testing_selected)$posterior[, "Yes"]
+
+# C. QDA (Should work now!)
+tryCatch({
+  qda_opt <- qda(Attrition ~ ., data = training_selected)
+  qda_prob_opt <- predict(qda_opt, testing_selected)$posterior[, "Yes"]
+  cat("QDA Status: SUCCESS\n")
+}, error = function(e) {
+  cat("QDA Status: FAILED (Reason:", e$message, ")\n")
+  qda_prob_opt <<- NULL
+})
+
+# D. NAIVE BAYES
+nb_opt <- naiveBayes(Attrition ~ ., data = training_selected)
+nb_prob_opt <- predict(nb_opt, testing_selected, type = "raw")[, "Yes"]
+```
+
+```{r}
+# Calculate ROC objects
+roc_logit_opt <- roc(testing_selected$Attrition, logit_prob_opt)
+roc_lda_opt   <- roc(testing_selected$Attrition, lda_prob_opt)
+roc_nb_opt    <- roc(testing_selected$Attrition, nb_prob_opt)
+
+# Plot Base
+plot.roc(roc_logit_opt, col="hotpink", print.auc=FALSE, main="ROC: Models with Feature Selection")
+plot.roc(roc_lda_opt, col="cyan4", add=TRUE)
+plot.roc(roc_nb_opt, col="orange", add=TRUE)
+
+# Add QDA if it worked
+if(exists("qda_prob_opt") && !is.null(qda_prob_opt)) {
+  roc_qda_opt <- roc(testing_selected$Attrition, qda_prob_opt)
+  plot.roc(roc_qda_opt, col="green", add=TRUE)
+  legend("bottomright", 
+         legend=c("Logistic", "LDA", "Naive Bayes", "QDA"), 
+         col=c("hotpink", "cyan4", "orange", "green"), lwd=2)
+} else {
+  legend("bottomright", 
+         legend=c("Logistic", "LDA", "Naive Bayes"), 
+         col=c("hotpink", "cyan4", "orange"), lwd=2)
+}
+
+cat("Logistic Regression AUC:", round(auc(roc_logit_opt), 4), "\n")
+cat("LDA AUC:                ", round(auc(roc_lda_opt), 4), "\n")
+cat("Naive Bayes AUC:        ", round(auc(roc_nb_opt), 4), "\n")
+```
+
+As we can see all the models have performed poorer after the feature selection process, on average we lost about 5% of the power of our models, which tells us that even though the variables were deemed less important during the feature sellection process they turn out to be more than just noise, rather they hold great statistical significance for our models.
+
+from this we can conclude that all our variables hold statistical significance to the classification process and we can not drop them without sacrificing better results in our analysis leading to poorly made choices that could cost the company a lot of money.
+
+##Part 4.3: Machine Learning models with selected variables
+In this subsection, we extend the new case study by evaluating how feature selection affects the machine learning models. This allows us to study the interaction between dimensionality reduction and model complexity.
+
+##Part 4.3.1: Random Forest with selected variables
+```{r}
+rf_fs <- randomForest(
+Attrition ~ .,
+data = training_selected,
+ntree = 300,
+mtry = floor(sqrt(ncol(training_selected) - 1)),
+importance = TRUE
+)
+rf_fs_prob <- predict(rf_fs, testing_selected, type = "prob")[, "Yes"]
+roc_rf_fs <- roc(testing_selected$Attrition, rf_fs_prob)
+plot.roc(
+roc_rf_fs,
+col = "darkorange",
+print.auc = TRUE,
+main = "ROC: Random Forest (Selected Variables)"
+)
+auc(roc_rf_fs)
+
+```
+Random Forest remains relatively robust to feature selection due to its ensemble structure. Although predictive performance decreases slightly, the model is able to compensate for the removal of weaker predictors through variance reduction.
+##Part 4.3.2:KNN with selected variables
+```{r}
+# 1. Prepare numeric predictors and Target
+# Assumes 'training_selected' and 'testing_selected' exist from previous steps
+train_x_fs <- training_selected %>% select_if(is.numeric)
+test_x_fs  <- testing_selected %>% select_if(is.numeric)
+train_y_fs <- training_selected$Attrition
+test_y_fs  <- testing_selected$Attrition
+
+# 2. Scaling (KNN is very sensitive to scale)
+preproc_fs <- preProcess(train_x_fs, method = c("center", "scale"))
+train_x_fs_scaled <- predict(preproc_fs, train_x_fs)
+test_x_fs_scaled  <- predict(preproc_fs, test_x_fs)
+
+# 3. Run KNN Model (Manual implementation from 'class' package)
+set.seed(123)
+knn_fs <- knn(
+  train = train_x_fs_scaled,
+  test = test_x_fs_scaled,
+  cl = train_y_fs,
+  k = 13,        # Using the optimal k found previously
+  prob = TRUE    # Essential to get probability votes
+)
+
+# 4. Extract Probabilities for "Yes"
+# knn() returns the prob of the *winning* class. We need P(Yes).
+knn_fs_prob <- ifelse(
+  knn_fs == "Yes", 
+  attr(knn_fs, "prob"), 
+  1 - attr(knn_fs, "prob")
+)
+
+# 5. ROC Curve and AUC
+roc_knn_fs <- roc(test_y_fs, knn_fs_prob, levels = c("No", "Yes"), direction = "<")
+
+plot(roc_knn_fs, 
+     col = "purple", 
+     print.auc = TRUE, 
+     main = "ROC: KNN (Selected Variables)",
+     legacy.axes = TRUE) # Makes x-axis 1-Specificity
+
+# Print AUC
+auc(roc_knn_fs)
+```
+KNN experiences a larger performance degradation after feature selection. Because KNN relies on distance-based similarity, removing variables alters neighborhood structures, increasing bias and reducing classification accuracy.
+
+##Plot a combined ROC for KNN and RandomForest
+```{r}
+roc_rf_fs    <- roc(testing_selected$Attrition, rf_fs_prob)
+roc_knn_fs   <- roc(testing_selected$Attrition, knn_fs_prob)
+plot.roc(
+  roc_rf_fs,
+  col = "darkorange",
+  lwd = 2,
+  main = "ROC Curves After Feature Selection"
+)
+
+plot.roc(
+  roc_knn_fs,
+  col = "purple",
+  lwd = 2,
+  add = TRUE
+)
+
+
+```
+##Conclusion Part 4
+Extending the new case study to machine learning models highlights that the impact of feature selection depends strongly on model structure. Interpretable models such as decision trees benefit from simpler decision rules, ensemble methods such as Random Forest are relatively robust, while distance-based methods such as KNN are the most sensitive to dimensionality reduction. These results reinforce the bias–variance trade-off discussed in the course and illustrate that feature selection does not universally improve predictive performance.
+
+# Part 5: New case study
+We will take 2 hypothetical employees one with low risk of attrition and the other with low risk of attrition and we will use our 3  best performing predictive and interpertable models being LDA, Penalized logistic regression and Random forest
+
+
+### Part 5.1 creating the hypothetical employee
+
+```{r}
+new_employees <- data.frame(
+  Age = c(23, 45),
+  Gender = c("Male", "Female"),
+  MaritalStatus = c("Single", "Married"),
+  Education = c(1, 4), # 1=Below College, 4=Master
+  EducationField = c("Marketing", "Life Sciences"),
+  Department = c("Sales", "Research & Development"),
+  JobRole = c("Sales Representative", "Manager"),
+  JobLevel = c(1, 5),
+  BusinessTravel = c("Travel_Frequently", "Non-Travel"),
+  OverTime = c("Yes", "No"),
+  MonthlyIncome = c(2500, 17500),
+  DailyRate = c(400, 1200),
+  HourlyRate = c(35, 90),
+  MonthlyRate = c(5000, 22000),
+  StockOptionLevel = c(0, 2),
+  PercentSalaryHike = c(11, 22),
+  EnvironmentSatisfaction = c(1, 4), # Low vs High
+  JobSatisfaction = c(1, 4),         # Low vs High
+  RelationshipSatisfaction = c(2, 4),
+  JobInvolvement = c(1, 4),
+  WorkLifeBalance = c(1, 4),         # Bad vs Good
+  PerformanceRating = c(3, 4),
+  TotalWorkingYears = c(1, 23),
+  NumCompaniesWorked = c(1, 3),
+  YearsAtCompany = c(1, 15),
+  YearsInCurrentRole = c(0, 10),
+  YearsSinceLastPromotion = c(0, 5),
+  YearsWithCurrManager = c(0, 9),
+  TrainingTimesLastYear = c(2, 3),
+  DistanceFromHome = c(25, 2)
+)
+```
+
+### Part 5.2: apply feature engineering (from part 1)
+```{r}
+new_employees$LogMonthlyIncome <- log(new_employees$MonthlyIncome + 1)
+new_employees$BusinessTravelNumeric <- as.numeric(factor(new_employees$BusinessTravel, 
+                                          levels = c("Non-Travel", "Travel_Rarely", "Travel_Frequently"))) - 1
+new_employees$MonthlyIncome <- NULL
+```
+### Part 5.3 align the variables
+to make sure that our new employees retain the same variables as our testing and training set
+```{r}
+for(col_name in names(new_employees)) {
+  if(col_name %in% names(training)) {
+    if(is.factor(training[[col_name]])) {
+      new_employees[[col_name]] <- factor(new_employees[[col_name]], 
+                                          levels = levels(training[[col_name]]))
+    }
+  } else {
+    cat(col_name, "' found in new_employees but NOT in training data.\n", sep="")
+  }
+}
+```
+### Part 5.4 apply the data to the models
+```{r}
+# 1. Penalized Logistic Regression Predictions
+# Note: glmnet requires a specific prediction call usually
+pred_glmnet <- predict(glmnet_fit, new_employees, type = "prob")[, "Yes"]
+
+# 2. LDA Predictions
+pred_lda <- predict(lda_model, new_employees)$posterior[, "Yes"]
+
+# 3. Random Forest Predictions
+pred_rf <- predict(rf_model, new_employees, type = "prob")[, "Yes"]
+```
+
+### Part 5.5 Comparison
+```{r}
+comparison_table <- data.frame(
+  Profile_Type = c("High Risk (Junior/Sales/OverTime)", "Low Risk (Senior/Manager/No OT)"),
+  
+  # Format probabilities as percentages
+  Penalized_Logit_Prob = paste0(round(pred_glmnet * 100, 2), "%"),
+  LDA_Prob             = paste0(round(pred_lda * 100, 2), "%"),
+  Random_Forest_Prob   = paste0(round(pred_rf * 100, 2), "%"),
+  
+  # create a consensus recommendation (if > 50% risk)
+  Recommendation = ifelse(pred_rf > 0.5 & pred_glmnet > 0.5, 
+                          "INTERVENE: High Risk", 
+                          "SAFE: Low Risk")
+)
+
+# 2. Display the table nicely
+# We use grid.table (from gridExtra package) for a graphical table in the report
+# If this fails, you can simply use 'print(comparison_table)'
+
+print(comparison_table)
+
+```
+### Part 5.6 Conclusions
+as seen from the comparison table all three models were good in predicting the high risk and low, The models identified the "Junior Sales Rep working OverTime" with extremely high confidence (89% - 99.8% probability of attrition).
+Whilst, The models identified the "Senior Manager with No OverTime" as safe, with negligible risk (<5% probability).
+
+The consistent high-confidence predictions across both linear and non-linear algorithms confirm that OverTime, JobRole, and Income are robust, reliable indicators.
